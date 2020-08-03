@@ -198,7 +198,7 @@
 
 // <o> NRF_BLE_SCAN_ADDRESS_CNT - Number of address filters. 
 #ifndef NRF_BLE_SCAN_ADDRESS_CNT
-#define NRF_BLE_SCAN_ADDRESS_CNT 0
+#define NRF_BLE_SCAN_ADDRESS_CNT 1 // I HATE BLESDK
 #endif
 
 // <o> NRF_BLE_SCAN_APPEARANCE_CNT - Number of appearance filters. 

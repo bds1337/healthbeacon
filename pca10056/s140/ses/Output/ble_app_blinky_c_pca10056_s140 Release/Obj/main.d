@@ -76,8 +76,6 @@ Output/ble_app_blinky_c_pca10056_s140\ Release/Obj/main.o: \
  ../../../../../../components/boards/pca10056.h \
  ../../../../../../components/libraries/bsp/bsp.h \
  ../../../../../../components/libraries/button/app_button.h \
- ../../../../../../components/libraries/bsp/bsp_btn_ble.h \
- ../../../../../../components/libraries/bsp/bsp.h \
  ../../../../../../components/softdevice/s140/headers/ble_hci.h \
  ../../../../../../components/ble/ble_advertising/ble_advertising.h \
  ../../../../../../components/softdevice/s140/headers/ble_gap.h \

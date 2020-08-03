@@ -53,7 +53,7 @@
 #include "app_timer.h"
 #include "boards.h"
 #include "bsp.h"
-#include "bsp_btn_ble.h"
+//#include "bsp_btn_ble.h"
 #include "ble.h"
 #include "ble_hci.h"
 #include "ble_advertising.h"
@@ -93,10 +93,8 @@
 #define LEDBUTTON_BUTTON_PIN            BSP_BUTTON_0                        /**< Button that will write to the LED characteristic of the peer */
 #define BUTTON_DETECTION_DELAY          APP_TIMER_TICKS(50)                 /**< Delay from a GPIOTE event until a button is reported as pushed (in number of timer ticks). */
 
-#define APP_BLE_CONN_CFG_TAG            1                                   /**< A tag identifying the SoftDevice BLE configuration. */
-#define APP_BLE_OBSERVER_PRIO           3                                   /**< Application's BLE observer priority. You shouldn't need to modify this value. */
-
 // WR4119 cmds
+#define TARGET_UUID                     0xFE9A 
 #define WR4119_CMD_LENGHT               0x0007 //12
 static uint8_t wr4119_cmd_pulse_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 0x01 };
 static uint8_t wr4119_cmd_pulse_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 0x00 };
@@ -105,30 +103,40 @@ static uint8_t wr4119_cmd_pulse_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 
 static uint8_t wr4119_cmd_pressure_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x01 };
 static uint8_t wr4119_cmd_pressure_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x00 };
 
-static char const m_target_periph_name[] = "WR4119";     /**< Name of the device we try to connect to. This name is searched in the scan report data*/
 
 BLE_NUS_C_DEF(m_ble_nus_c); 
-NRF_BLE_SCAN_DEF(m_scan);                                       /**< Scanning module instance. */
 //BLE_LBS_C_DEF(m_ble_lbs_c);                                     /**< Main structure used by the LBS client module. */
 NRF_BLE_GATT_DEF(m_gatt);                                       /**< GATT module instance. */
 BLE_DB_DISCOVERY_DEF(m_db_disc);                                /**< DB discovery module instance. */
+NRF_BLE_SCAN_DEF(m_scan);                                       /**< Scanning module instance. */
+
+static uint16_t m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - OPCODE_LENGTH - HANDLE_LENGTH;
 
 static bool wr4119_connected;
 static bool wr4119_pulse_measured;
 static bool wr4119_pressure_measured;
 
 static bool                  m_memory_access_in_progress;
-static ble_gap_scan_params_t m_scan_param =                 /**< Scan parameters requested for scanning and connection. */
+
+static ble_gap_scan_params_t const m_scan_param =                 /**< Scan parameters requested for scanning and connection. */
 {
     .active        = 0x00,
-    .interval      = SCAN_INTERVAL,
-    .window        = SCAN_WINDOW,
-    .filter_policy = BLE_GAP_SCAN_FP_ACCEPT_ALL,
-    .timeout       = SCAN_DURATION,
-//    .scan_phys     = BLE_GAP_PHY_CODED,                                 // Choose only one of the following scan_phys
+    .interval      = NRF_BLE_SCAN_SCAN_INTERVAL,
+    .window        = NRF_BLE_SCAN_SCAN_WINDOW,
+    .filter_policy  = BLE_GAP_SCAN_FP_ACCEPT_ALL,
+    .timeout       = NRF_BLE_SCAN_SCAN_DURATION,
     .scan_phys     = BLE_GAP_PHY_1MBPS,
-//    .scan_phys     = BLE_GAP_PHY_2MBPS,
-    .extended      = 1,
+    .extended      = 0,
+};
+
+static char const m_target_periph_name[] = "WR4119";     /**< Name of the device we try to connect to. This name is searched in the scan report data*/
+static bool is_connect_per_addr = true;            /**< If you want to connect to a peripheral with a given address, set this to true and put the correct address in the variable below. */
+
+//.addr      = {0xEF, 0xCC, 0x8F, 0xF8, 0x87, 0x50}, but need to reverse
+static ble_gap_addr_t const m_target_periph_addr =
+{
+    .addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC,
+    .addr      = {0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF} // reversed!
 };
 
 
@@ -147,8 +155,8 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 {
     app_error_handler(0xDEADBEEF, line_num, p_file_name);
 }
-static void ble_nus_wr4119_processing(void);
 
+static void ble_nus_wr4119_processing(void);
 
 /**@brief Function for the LEDs initialization.
  *
@@ -173,9 +181,6 @@ static void scan_start(void)
     }
     err_code = nrf_ble_scan_start(&m_scan);
     APP_ERROR_CHECK(err_code);
-
-    //bsp_board_led_off(CENTRAL_CONNECTED_LED);
-    //bsp_board_led_on(CENTRAL_SCANNING_LED);
 }
 
 /**@brief Function for handling BLE events.
@@ -339,42 +344,6 @@ static void ble_stack_init(void)
 }
 
 
-/**@brief Function for handling events from the button handler module.
- *
- * @param[in] pin_no        The pin that the event applies to.
- * @param[in] button_action The button action (press/release).
- */
-static void button_event_handler(uint8_t pin_no, uint8_t button_action)
-{
-    ret_code_t err_code;
-
-    NRF_LOG_INFO("Button %d", button_action);
-    switch (pin_no)
-    {
-        case LEDBUTTON_BUTTON_PIN:
-        {
-            NRF_LOG_INFO("Button %d", button_action);
-            /*
-            err_code = ble_lbs_led_status_send(&m_ble_lbs_c, button_action);
-            if (err_code != NRF_SUCCESS &&
-                err_code != BLE_ERROR_INVALID_CONN_HANDLE &&
-                err_code != NRF_ERROR_INVALID_STATE)
-            {
-                APP_ERROR_CHECK(err_code);
-            }
-            if (err_code == NRF_SUCCESS)
-            {
-                NRF_LOG_INFO("LBS write LED state %d", button_action);
-            }
-            */
-         }   break;
-
-        default:
-            APP_ERROR_HANDLER(pin_no);
-            break;
-    }
-}
-
 
 /**@brief Function for handling Scaning events.
  *
@@ -477,22 +446,7 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
   
 }
 
-/**@brief Function for initializing the button handler module.
- */
-static void buttons_init(void)
-{
-    ret_code_t err_code;
 
-    //The array must be static because a pointer to it will be saved in the button handler module.
-    static app_button_cfg_t buttons[] =
-    {
-        {LEDBUTTON_BUTTON_PIN, false, BUTTON_PULL, button_event_handler}
-    };
-
-    err_code = app_button_init(buttons, ARRAY_SIZE(buttons),
-                               BUTTON_DETECTION_DELAY);
-    APP_ERROR_CHECK(err_code);
-}
 
 static void ble_nus_wr4119_processing(void)
 {
@@ -537,7 +491,7 @@ static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t con
             APP_ERROR_CHECK(err_code);
             NRF_LOG_INFO("Connected to device with Nordic UART Service.");
             // замерить давление и пульс
-            //ble_nus_wr4119_processing();
+            ble_nus_wr4119_processing();
          } break;
 
         case BLE_NUS_C_EVT_NUS_TX_EVT:
@@ -579,7 +533,6 @@ static void nus_c_init(void)
  */
 static void db_disc_handler(ble_db_discovery_evt_t * p_evt)
 {
-    //ble_lbs_on_db_disc_evt(&m_ble_lbs_c, p_evt);
     ble_nus_c_on_db_disc_evt(&m_ble_nus_c, p_evt);
 }
 
@@ -611,7 +564,6 @@ static void timer_init(void)
     APP_ERROR_CHECK(err_code);
 }
 
-
 /**@brief Function for initializing the Power manager. */
 static void power_management_init(void)
 {
@@ -635,20 +587,47 @@ static void scan_init(void)
     err_code = nrf_ble_scan_init(&m_scan, &init_scan, scan_evt_handler);
     APP_ERROR_CHECK(err_code);
 
-    // Setting filters for scanning.
-    err_code = nrf_ble_scan_filters_enable(&m_scan, NRF_BLE_SCAN_NAME_FILTER, false);
+    // установка фильтров
+    //err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_NAME_FILTER, m_target_periph_name);
+    //APP_ERROR_CHECK(err_code);
+    
+    // NRF_BLE_SCAN_ADDR_FILTER NRF_BLE_SCAN_ALL_FILTER
+    err_code = nrf_ble_scan_filters_enable(&m_scan, NRF_BLE_SCAN_ALL_FILTER, false);
     APP_ERROR_CHECK(err_code);
-
-    err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_NAME_FILTER, m_target_periph_name);
-    APP_ERROR_CHECK(err_code);
+    
+    if (is_connect_per_addr)
+    {
+        err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_ADDR_FILTER, m_target_periph_addr.addr);
+        if (err_code != NRF_SUCCESS) 
+        {
+            NRF_LOG_INFO("error-%d",err_code); // 7 = NRF_ERROR_INVALID_PARAM
+        }
+        APP_ERROR_CHECK(err_code);
+    }
 }
 
+/**@brief Function for handling events from the GATT library. */
+void gatt_evt_handler(nrf_ble_gatt_t * p_gatt, nrf_ble_gatt_evt_t const * p_evt)
+{
+    if (p_evt->evt_id == NRF_BLE_GATT_EVT_ATT_MTU_UPDATED)
+    {
+        NRF_LOG_INFO("ATT MTU exchange completed.");
+
+        m_ble_nus_max_data_len = p_evt->params.att_mtu_effective - OPCODE_LENGTH - HANDLE_LENGTH;
+        NRF_LOG_INFO("Ble NUS max data length set to 0x%X(%d)", m_ble_nus_max_data_len, m_ble_nus_max_data_len);
+    }
+}
 
 /**@brief Function for initializing the GATT module.
  */
 static void gatt_init(void)
 {
-    ret_code_t err_code = nrf_ble_gatt_init(&m_gatt, NULL);
+    //ret_code_t err_code = nrf_ble_gatt_init(&m_gatt, NULL);
+    ret_code_t err_code = nrf_ble_gatt_init(&m_gatt, gatt_evt_handler);
+    APP_ERROR_CHECK(err_code);
+    
+    //dunno
+    err_code = nrf_ble_gatt_att_mtu_central_set(&m_gatt, NRF_SDH_BLE_GATT_MAX_MTU_SIZE);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -674,23 +653,22 @@ int main(void)
     log_init();
     timer_init();
     leds_init();
-    buttons_init();
+    db_discovery_init();
     power_management_init();
     ble_stack_init();
-    scan_init();
     gatt_init();
-    db_discovery_init();
+    nus_c_init();
+    scan_init();
     // led stuff are unused
     //lbs_c_init();
 
-    nus_c_init();
 
     // Start execution.
     NRF_LOG_INFO("Blinky CENTRAL example started.");
     scan_start();
 
     // Turn on the LED to signal scanning.
-    bsp_board_led_on(CENTRAL_SCANNING_LED);
+    //bsp_board_led_on(CENTRAL_SCANNING_LED);
 
     // Enter main loop.
     for (;;)

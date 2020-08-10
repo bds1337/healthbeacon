@@ -116,10 +116,10 @@ static bool wr4119_connected;
 static bool wr4119_pulse_measured;
 static bool wr4119_pressure_measured;
 
-static bool                  m_whitelist_disabled;          /**< True if the whitelist is temporarily disabled. */
-static bool                  m_memory_access_in_progress;
+static bool m_whitelist_disabled;          /**< True if the whitelist is temporarily disabled. */
+static bool m_memory_access_in_progress;
 
-static ble_gap_scan_params_t const m_scan_param =                 /**< Scan parameters requested for scanning and connection. */
+static ble_gap_scan_params_t const m_scan_param_old =                 /**< Scan parameters requested for scanning and connection. */
 {
     .active        = 0x00,
     .interval      = NRF_BLE_SCAN_SCAN_INTERVAL,
@@ -128,6 +128,17 @@ static ble_gap_scan_params_t const m_scan_param =                 /**< Scan para
     .timeout       = NRF_BLE_SCAN_SCAN_DURATION,
     .scan_phys     = BLE_GAP_PHY_1MBPS,
     .extended      = 0,
+};
+
+/**< Scan parameters requested for scanning and connection. */
+static ble_gap_scan_params_t m_scan_param =
+{
+        .active        = 0x00,           /* Disable the acvtive scanning */
+        .interval      = NRF_BLE_SCAN_SCAN_INTERVAL,
+        .window        = NRF_BLE_SCAN_SCAN_WINDOW,
+        .filter_policy = BLE_GAP_SCAN_FP_WHITELIST,
+        .timeout       = 0, //SCAN_DURATION_WHITELIST
+        .scan_phys     = BLE_GAP_PHY_1MBPS,
 };
 
 typedef enum
@@ -147,7 +158,8 @@ static ble_gap_addr_t const m_target_periph_addr =
     .addr      = {0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF} // наоборот!
 };
 
-//a bit custom whitelist (addrlist)
+// START OF ADDRLIST LIB
+// a bit custom whitelist (addrlist)
 static bool wr_addrlist_is_running = false;
 static ble_gap_addr_t wr_addrlist_addrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT]; // 8 устройств максимум
 static ble_gap_addr_t const * wr_addrlist_addr_ptrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT];
@@ -204,6 +216,16 @@ ret_code_t wr_ble_addrlist_clear(void)
     return ret;
 }
 
+uint8_t wr_ble_addrlist_count(void)
+{
+    return wr_addr_count;
+}
+
+bool wr_ble_addrlist_is_running(void)
+{
+    return wr_addrlist_is_running;
+}
+
 // for debuging
 static void wr_ble_addrlist_logshow(void)
 {
@@ -218,6 +240,8 @@ static void wr_ble_addrlist_logshow(void)
         NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[0]);
     }
 }
+
+// END OF ADDRLIST LIB
 
 /**@brief Function to handle asserts in the SoftDevice.
  *
@@ -422,6 +446,21 @@ static void ble_stack_init(void)
     NRF_SDH_SOC_OBSERVER(m_soc_observer, APP_SOC_OBSERVER_PRIO, soc_evt_handler, NULL);
 }
 
+static void on_whitelist_req(void)
+{
+    ret_code_t ret;
+    if ( ( (wr_ble_addrlist_count() == 0) ) || (m_whitelist_disabled) )
+    {
+        m_scan_param.filter_policy = BLE_GAP_SCAN_FP_ACCEPT_ALL;
+        ret = nrf_ble_scan_params_set(&m_scan, &m_scan_param);
+        APP_ERROR_CHECK(ret);
+    }
+    else
+    {
+        ret = wr_ble_addrlist_enable();
+        APP_ERROR_CHECK(ret);
+    }
+}
 
 /**@brief Function for disabling the use of the whitelist for scanning.
  */
@@ -449,9 +488,29 @@ static void scan_evt_handler(scan_evt_t const * p_scan_evt)
     switch(p_scan_evt->scan_evt_id)
     {
         case NRF_BLE_SCAN_EVT_CONNECTING_ERROR:
+        {
             err_code = p_scan_evt->params.connecting_err.err_code;
             APP_ERROR_CHECK(err_code);
-            break;
+        } break;
+        
+        case NRF_BLE_SCAN_EVT_WHITELIST_REQUEST:
+        {
+            on_whitelist_req();
+            m_whitelist_disabled = false;
+        } break;
+        
+        case NRF_BLE_SCAN_EVT_WHITELIST_ADV_REPORT:
+        {
+            NRF_LOG_INFO("NRF_BLE_SCAN_EVT_WHITELIST_ADV_REPORT");
+            NRF_LOG_HEXDUMP_INFO(p_scan_evt->params.p_whitelist_adv_report, sizeof(p_scan_evt->params.p_whitelist_adv_report));
+        } break;
+
+        case NRF_BLE_SCAN_EVT_SCAN_TIMEOUT:
+        {
+            NRF_LOG_INFO("Scan timed out.");
+            scan_start();
+        } break;
+
         default:
           break;
     }
@@ -468,46 +527,6 @@ static void ble_nus_chars_received_uart_print(uint8_t * p_data, uint16_t data_le
 
     NRF_LOG_INFO("Receiving data.");
     NRF_LOG_RAW_HEXDUMP_INFO(p_data, data_len);
-    /*
-    for (uint32_t i = 0; i < data_len; i++)
-    {
-        do
-        {
-            ret_val = app_uart_put(p_data[i]);
-            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
-            {
-                NRF_LOG_ERROR("app_uart_put failed for index 0x%04x.", i);
-                APP_ERROR_CHECK(ret_val);
-            }
-        } while (ret_val == NRF_ERROR_BUSY);
-    }
-    if (p_data[data_len-1] == '\r')
-    {
-        while (app_uart_put('\n') == NRF_ERROR_BUSY);
-    }
-    */
-    // ECHOBACK_BLE_UART_DATA (отправляет полученные данные обратно)
-    /*
-        //Turn on PULSE
-        uint8_t * myp_data = wr4119_cmd_pulse_start;
-        uint16_t mydata_len = WR4119_CMD_LENGHT;
-        NRF_LOG_RAW_HEXDUMP_INFO(myp_data, mydata_len);
-
-        // Send data back to the peripheral.
-        
-        do
-        {
-            
-            ret_val = ble_nus_c_string_send(&m_ble_nus_c, myp_data, mydata_len);
-            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
-            {
-                NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
-                APP_ERROR_CHECK(ret_val);
-            }
-            
-        } while (ret_val == NRF_ERROR_BUSY);
-    */
-        
 }
 
 /**@brief Send shit on NUS
@@ -523,20 +542,16 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
     //uint16_t mydata_len = WR4119_CMD_LENGHT;
     //NRF_LOG_RAW_HEXDUMP_INFO(myp_data, mydata_len);
 
-        // Send data back to the peripheral.
-     
-        do
+    // Send data back to the peripheral.
+    do
+    {
+        ret_val = ble_nus_c_string_send(&m_ble_nus_c, p_data, data_len);
+        if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
         {
-            
-            ret_val = ble_nus_c_string_send(&m_ble_nus_c, p_data, data_len);
-            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
-            {
-                NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
-                APP_ERROR_CHECK(ret_val);
-            }
-            
-        } while (ret_val == NRF_ERROR_BUSY);
-  
+            NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
+            APP_ERROR_CHECK(ret_val);
+        }
+    } while (ret_val == NRF_ERROR_BUSY);
 }
 
 
@@ -638,31 +653,6 @@ static void db_discovery_init(void)
 }
 
 
-static void whitelist_load()
-{
-    ret_code_t   ret;
-    /*pm_peer_id_t peers[8];
-    uint32_t     peer_cnt;
-
-    memset(peers, PM_PEER_ID_INVALID, sizeof(peers));
-    peer_cnt = (sizeof(peers) / sizeof(pm_peer_id_t));
-    
-    // Load all peers from the flash and whitelist them.
-    peer_list_get(peers, &peer_cnt);
-
-    ret = pm_whitelist_set(peers, peer_cnt);
-    APP_ERROR_CHECK(ret);
-
-    // Setup the list of device identities.
-    // Some SoftDevices do not support this feature.
-    ret = pm_device_identities_list_set(peers, peer_cnt);
-    if (ret != NRF_ERROR_NOT_SUPPORTED)
-    {
-        APP_ERROR_CHECK(ret);
-    }
-    */
-}
-
 /**@brief Function for initializing the log.
  */
 static void log_init(void)
@@ -698,9 +688,9 @@ static void scan_init(void)
 
     memset(&init_scan, 0, sizeof(init_scan));
 
-    init_scan.connect_if_match = true;
+    init_scan.connect_if_match = false;
     init_scan.conn_cfg_tag     = APP_BLE_CONN_CFG_TAG;
-    //init_scan.p_scan_param     = &m_scan_param;
+    init_scan.p_scan_param     = &m_scan_param;
 
     err_code = nrf_ble_scan_init(&m_scan, &init_scan, scan_evt_handler);
     APP_ERROR_CHECK(err_code);
@@ -713,7 +703,8 @@ static void scan_init(void)
     err_code = nrf_ble_scan_filters_enable(&m_scan, NRF_BLE_SCAN_ALL_FILTER, false);
     APP_ERROR_CHECK(err_code);
     
-    if (is_connect_per_addr)
+    //if (is_connect_per_addr)
+    if (0)
     {
         err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_ADDR_FILTER, m_target_periph_addr.addr);
         if (err_code != NRF_SUCCESS) 
@@ -722,6 +713,7 @@ static void scan_init(void)
         }
         APP_ERROR_CHECK(err_code);
     }
+    m_whitelist_disabled = false;
 }
 
 /**@brief Function for handling events from the GATT library. */
@@ -770,29 +762,30 @@ static void TEST_set_whitelist()
     ble_gap_addr_t whitelist_addrs;
     uint8_t whitelist_num = 0;
     whitelist_addrs.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
-    whitelist_addrs.addr[5] = 0xcc;
-    whitelist_addrs.addr[4] = 0xcc;
-    whitelist_addrs.addr[3] = 0xcc;
-    whitelist_addrs.addr[2] = 0xcc;
-    whitelist_addrs.addr[1] = 0xcc;
-    whitelist_addrs.addr[0] = 0xcc;
+    whitelist_addrs.addr[5] = 0xe1;
+    whitelist_addrs.addr[4] = 0x87;
+    whitelist_addrs.addr[3] = 0x08;
+    whitelist_addrs.addr[2] = 0x02;
+    whitelist_addrs.addr[1] = 0x7d;
+    whitelist_addrs.addr[0] = 0x62;
     ret = wr_ble_addrlist_add(&whitelist_addrs, &whitelist_num);
     NRF_LOG_INFO("addlist num: %u", whitelist_num);
     APP_ERROR_CHECK(ret);
 }
 
-static void TEST_set_whitelist2()
+static void TEST_set_whitelist_wr41()
 {
     ret_code_t ret;
     ble_gap_addr_t whitelist_addrs;
     uint8_t whitelist_num = 0;
     whitelist_addrs.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
-    whitelist_addrs.addr[5] = 0xca;
-    whitelist_addrs.addr[4] = 0xca;
-    whitelist_addrs.addr[3] = 0xca;
-    whitelist_addrs.addr[2] = 0xca;
-    whitelist_addrs.addr[1] = 0xca;
-    whitelist_addrs.addr[0] = 0xca;
+    //{0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF}
+    whitelist_addrs.addr[5] = 0xef;
+    whitelist_addrs.addr[4] = 0xcc;
+    whitelist_addrs.addr[3] = 0x8f;
+    whitelist_addrs.addr[2] = 0xf8;
+    whitelist_addrs.addr[1] = 0x87;
+    whitelist_addrs.addr[0] = 0x50;
     ret = wr_ble_addrlist_add(&whitelist_addrs, &whitelist_num);
     NRF_LOG_INFO("addlist num: %u", whitelist_num);
     APP_ERROR_CHECK(ret);
@@ -819,7 +812,7 @@ int main(void)
     APP_ERROR_CHECK(ret);
     
     TEST_set_whitelist();
-    TEST_set_whitelist2();
+    TEST_set_whitelist_wr41();
     //TEST_set_whitelist();
     
     ret = wr_ble_addrlist_enable();

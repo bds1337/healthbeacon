@@ -116,6 +116,7 @@ static bool wr4119_connected;
 static bool wr4119_pulse_measured;
 static bool wr4119_pressure_measured;
 
+static bool                  m_whitelist_disabled;          /**< True if the whitelist is temporarily disabled. */
 static bool                  m_memory_access_in_progress;
 
 static ble_gap_scan_params_t const m_scan_param =                 /**< Scan parameters requested for scanning and connection. */
@@ -129,6 +130,13 @@ static ble_gap_scan_params_t const m_scan_param =                 /**< Scan para
     .extended      = 0,
 };
 
+typedef enum
+{
+    BLE_NO_SCAN,                                                  /**< No advertising running. */
+    BLE_WHITELIST_SCAN,                                           /**< Advertising with whitelist. */
+    BLE_FAST_SCAN,                                                /**< Fast advertising running. */
+} ble_advertising_mode_t;
+
 static char const m_target_periph_name[] = "WR4119";     /**< Name of the device we try to connect to. This name is searched in the scan report data*/
 static bool is_connect_per_addr = true;            /**< If you want to connect to a peripheral with a given address, set this to true and put the correct address in the variable below. */
 
@@ -139,6 +147,79 @@ static ble_gap_addr_t const m_target_periph_addr =
     .addr      = {0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF} // reversed!
 };
 
+//bes337's custom whitelist (addrlist)
+static bool wr_addrlist_is_running = false;
+static ble_gap_addr_t wr_addrlist_addrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT]; // 8 devices
+static ble_gap_addr_t const * wr_addrlist_addr_ptrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT]; // 8 devices
+static uint8_t wr_addr_count = 0;
+
+ret_code_t wr_ble_addrlist_add(ble_gap_addr_t *addr, uint8_t * addrlist_count)
+{
+    ret_code_t ret;
+    if (wr_addr_count >= BLE_GAP_WHITELIST_ADDR_MAX_COUNT)
+    {
+        return NRF_ERROR_DATA_SIZE;
+    }
+
+    for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
+    {
+        if (memcmp(&wr_addrlist_addrs[i], addr, sizeof(ble_gap_addr_t))==0)
+            return NRF_ERROR_INVALID_PARAM;
+    }
+
+    memcpy(&wr_addrlist_addrs[wr_addr_count], addr, sizeof(ble_gap_addr_t));
+    wr_addr_count++;
+    *addrlist_count = wr_addr_count;
+
+
+    return NRF_SUCCESS;
+}
+
+ret_code_t wr_ble_addrlist_enable(void)
+{
+    ret_code_t ret;
+    wr_addrlist_is_running = true;
+    if (wr_addr_count == 0)
+    {
+        return NRF_ERROR_DATA_SIZE;
+    }
+    for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
+    {
+        wr_addrlist_addr_ptrs[i] = &wr_addrlist_addrs[i];
+    }
+    
+    ret = sd_ble_gap_whitelist_set(wr_addrlist_addr_ptrs, wr_addr_count);
+    APP_ERROR_CHECK(ret);
+    return NRF_SUCCESS;
+}
+
+ret_code_t wr_ble_addrlist_clear(void)
+{
+    ret_code_t ret;
+    memset(wr_addrlist_addrs, 0, sizeof(wr_addrlist_addrs) );
+    wr_addr_count = 0;
+
+    ret = sd_ble_gap_whitelist_set(NULL, 0);
+    APP_ERROR_CHECK(ret);
+
+    wr_addrlist_is_running = false;
+    return ret;
+}
+
+// for debuging
+static void wr_ble_addrlist_logshow(void)
+{
+    NRF_LOG_INFO("[ADDRLIST]: ");
+    //for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
+    //{
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[5]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[4]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[3]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[2]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[1]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[0]);
+    //}
+}
 
 /**@brief Function to handle asserts in the SoftDevice.
  *
@@ -344,6 +425,20 @@ static void ble_stack_init(void)
 }
 
 
+/**@brief Function for disabling the use of the whitelist for scanning.
+ */
+static void whitelist_disable(void)
+{
+    if (!m_whitelist_disabled)
+    {
+        NRF_LOG_INFO("Whitelist temporarily disabled.");
+        m_whitelist_disabled = true;
+        nrf_ble_scan_stop();
+        scan_start();
+    }
+}
+
+
 
 /**@brief Function for handling Scaning events.
  *
@@ -545,6 +640,31 @@ static void db_discovery_init(void)
 }
 
 
+static void whitelist_load()
+{
+    ret_code_t   ret;
+    /*pm_peer_id_t peers[8];
+    uint32_t     peer_cnt;
+
+    memset(peers, PM_PEER_ID_INVALID, sizeof(peers));
+    peer_cnt = (sizeof(peers) / sizeof(pm_peer_id_t));
+    
+    // Load all peers from the flash and whitelist them.
+    peer_list_get(peers, &peer_cnt);
+
+    ret = pm_whitelist_set(peers, peer_cnt);
+    APP_ERROR_CHECK(ret);
+
+    // Setup the list of device identities.
+    // Some SoftDevices do not support this feature.
+    ret = pm_device_identities_list_set(peers, peer_cnt);
+    if (ret != NRF_ERROR_NOT_SUPPORTED)
+    {
+        APP_ERROR_CHECK(ret);
+    }
+    */
+}
+
 /**@brief Function for initializing the log.
  */
 static void log_init(void)
@@ -646,6 +766,22 @@ static void idle_state_handle(void)
     //nrf_pwr_mgmt_run();
 }
 
+static void test_set_whitelist(void)
+{
+    ret_code_t ret;
+    ble_gap_addr_t whitelist_addrs;
+    uint8_t whitelist_num = 0;
+    whitelist_addrs.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
+    whitelist_addrs.addr[5] = 0xcc;
+    whitelist_addrs.addr[4] = 0xcc;
+    whitelist_addrs.addr[3] = 0xcc;
+    whitelist_addrs.addr[2] = 0xcc;
+    whitelist_addrs.addr[1] = 0xcc;
+    whitelist_addrs.addr[0] = 0xcc;
+    ret = wr_ble_addrlist_add(&whitelist_addrs, &whitelist_num);
+    NRF_LOG_INFO("addlist num: %u", whitelist_num);
+    APP_ERROR_CHECK(ret);
+}
 
 int main(void)
 {
@@ -662,9 +798,21 @@ int main(void)
     // led stuff are unused
     //lbs_c_init();
 
+    //whitelist_load();
 
+    ret_code_t ret;
+    ret = wr_ble_addrlist_clear();
+    APP_ERROR_CHECK(ret);
+    
+    test_set_whitelist();
+    
+    ret = wr_ble_addrlist_enable();
+    APP_ERROR_CHECK(ret);
+    wr_ble_addrlist_logshow();
+    
     // Start execution.
     NRF_LOG_INFO("Blinky CENTRAL example started.");
+       //test_set_whitelist();
     scan_start();
 
     // Turn on the LED to signal scanning.

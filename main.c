@@ -144,25 +144,24 @@ static bool is_connect_per_addr = true;            /**< If you want to connect t
 static ble_gap_addr_t const m_target_periph_addr =
 {
     .addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC,
-    .addr      = {0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF} // reversed!
+    .addr      = {0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF} // наоборот!
 };
 
-//bes337's custom whitelist (addrlist)
+//a bit custom whitelist (addrlist)
 static bool wr_addrlist_is_running = false;
-static ble_gap_addr_t wr_addrlist_addrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT]; // 8 devices
-static ble_gap_addr_t const * wr_addrlist_addr_ptrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT]; // 8 devices
+static ble_gap_addr_t wr_addrlist_addrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT]; // 8 устройств максимум
+static ble_gap_addr_t const * wr_addrlist_addr_ptrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT];
 static uint8_t wr_addr_count = 0;
 
 ret_code_t wr_ble_addrlist_add(ble_gap_addr_t *addr, uint8_t * addrlist_count)
 {
     ret_code_t ret;
     if (wr_addr_count >= BLE_GAP_WHITELIST_ADDR_MAX_COUNT)
-    {
         return NRF_ERROR_DATA_SIZE;
-    }
 
     for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
     {
+        // запрещаю добавлять одинаковые адреса
         if (memcmp(&wr_addrlist_addrs[i], addr, sizeof(ble_gap_addr_t))==0)
             return NRF_ERROR_INVALID_PARAM;
     }
@@ -180,9 +179,8 @@ ret_code_t wr_ble_addrlist_enable(void)
     ret_code_t ret;
     wr_addrlist_is_running = true;
     if (wr_addr_count == 0)
-    {
         return NRF_ERROR_DATA_SIZE;
-    }
+
     for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
     {
         wr_addrlist_addr_ptrs[i] = &wr_addrlist_addrs[i];
@@ -210,15 +208,15 @@ ret_code_t wr_ble_addrlist_clear(void)
 static void wr_ble_addrlist_logshow(void)
 {
     NRF_LOG_INFO("[ADDRLIST]: ");
-    //for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
-    //{
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[5]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[4]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[3]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[2]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[1]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[0]->addr[0]);
-    //}
+    for (uint32_t i = 0; i < wr_addr_count; i++)
+    {
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[5]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[4]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[3]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[2]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[1]);
+        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[0]);
+    }
 }
 
 /**@brief Function to handle asserts in the SoftDevice.
@@ -766,7 +764,7 @@ static void idle_state_handle(void)
     //nrf_pwr_mgmt_run();
 }
 
-static void test_set_whitelist(void)
+static void TEST_set_whitelist()
 {
     ret_code_t ret;
     ble_gap_addr_t whitelist_addrs;
@@ -783,6 +781,22 @@ static void test_set_whitelist(void)
     APP_ERROR_CHECK(ret);
 }
 
+static void TEST_set_whitelist2()
+{
+    ret_code_t ret;
+    ble_gap_addr_t whitelist_addrs;
+    uint8_t whitelist_num = 0;
+    whitelist_addrs.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
+    whitelist_addrs.addr[5] = 0xca;
+    whitelist_addrs.addr[4] = 0xca;
+    whitelist_addrs.addr[3] = 0xca;
+    whitelist_addrs.addr[2] = 0xca;
+    whitelist_addrs.addr[1] = 0xca;
+    whitelist_addrs.addr[0] = 0xca;
+    ret = wr_ble_addrlist_add(&whitelist_addrs, &whitelist_num);
+    NRF_LOG_INFO("addlist num: %u", whitelist_num);
+    APP_ERROR_CHECK(ret);
+}
 int main(void)
 {
     // Initialize.
@@ -804,10 +818,13 @@ int main(void)
     ret = wr_ble_addrlist_clear();
     APP_ERROR_CHECK(ret);
     
-    test_set_whitelist();
+    TEST_set_whitelist();
+    TEST_set_whitelist2();
+    //TEST_set_whitelist();
     
     ret = wr_ble_addrlist_enable();
     APP_ERROR_CHECK(ret);
+    //wr_ble_addrlist_logshow();
     wr_ble_addrlist_logshow();
     
     // Start execution.

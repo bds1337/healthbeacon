@@ -89,8 +89,13 @@
       <file file_name="../../../../../../components/libraries/bsp/bsp_btn_ble.c" />
     </folder>
     <folder Name="Application">
-      <file file_name="../../../main.c" />
+      <file file_name="../../../main.c">
+        <configuration
+          Name="Common"
+          c_user_include_directories=".;./addons/" />
+      </file>
       <file file_name="../config/sdk_config.h" />
+      <file file_name="../../../addons/addrlist.c" />
     </folder>
     <folder Name="nRF_Segger_RTT">
       <file file_name="../../../../../../external/segger_rtt/SEGGER_RTT.c" />

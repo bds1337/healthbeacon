@@ -67,11 +67,14 @@
 //added
 #include "nrf_fstorage.h"
 #include "ble_nus_c.h"
-#include "nrf_delay.h"
+#include "nrf_delay.h" // буду использовать апп таймер всместо
+
 
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
+
+#include "addons/addrlist.h"
 
 #define APP_BLE_CONN_CFG_TAG        1                                   /**< Tag that identifies the BLE configuration of the SoftDevice. */
 #define APP_BLE_OBSERVER_PRIO       3                                   /**< BLE observer priority of the application. There is no need to modify this value. */
@@ -103,12 +106,15 @@ static uint8_t wr4119_cmd_pulse_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 
 static uint8_t wr4119_cmd_pressure_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x01 };
 static uint8_t wr4119_cmd_pressure_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x00 };
 
+static uint32_t wr4119_measure_timeout = 0; // для таймера измерения давления и пульса
 
 BLE_NUS_C_DEF(m_ble_nus_c); 
 //BLE_LBS_C_DEF(m_ble_lbs_c);                                     /**< Main structure used by the LBS client module. */
 NRF_BLE_GATT_DEF(m_gatt);                                       /**< GATT module instance. */
 BLE_DB_DISCOVERY_DEF(m_db_disc);                                /**< DB discovery module instance. */
 NRF_BLE_SCAN_DEF(m_scan);                                       /**< Scanning module instance. */
+
+APP_TIMER_DEF(m_single_shot_timer_id);
 
 static uint16_t m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - OPCODE_LENGTH - HANDLE_LENGTH;
 
@@ -158,90 +164,6 @@ static ble_gap_addr_t const m_target_periph_addr =
     .addr      = {0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF} // наоборот!
 };
 
-// START OF ADDRLIST LIB
-// a bit custom whitelist (addrlist)
-static bool wr_addrlist_is_running = false;
-static ble_gap_addr_t wr_addrlist_addrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT]; // 8 устройств максимум
-static ble_gap_addr_t const * wr_addrlist_addr_ptrs[BLE_GAP_WHITELIST_ADDR_MAX_COUNT];
-static uint8_t wr_addr_count = 0;
-
-ret_code_t wr_ble_addrlist_add(ble_gap_addr_t *addr, uint8_t * addrlist_count)
-{
-    ret_code_t ret;
-    if (wr_addr_count >= BLE_GAP_WHITELIST_ADDR_MAX_COUNT)
-        return NRF_ERROR_DATA_SIZE;
-
-    for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
-    {
-        // запрещаю добавлять одинаковые адреса
-        if (memcmp(&wr_addrlist_addrs[i], addr, sizeof(ble_gap_addr_t))==0)
-            return NRF_ERROR_INVALID_PARAM;
-    }
-
-    memcpy(&wr_addrlist_addrs[wr_addr_count], addr, sizeof(ble_gap_addr_t));
-    wr_addr_count++;
-    *addrlist_count = wr_addr_count;
-
-
-    return NRF_SUCCESS;
-}
-
-ret_code_t wr_ble_addrlist_enable(void)
-{
-    ret_code_t ret;
-    wr_addrlist_is_running = true;
-    if (wr_addr_count == 0)
-        return NRF_ERROR_DATA_SIZE;
-
-    for (uint32_t i = 0; i < BLE_GAP_WHITELIST_ADDR_MAX_COUNT; i++)
-    {
-        wr_addrlist_addr_ptrs[i] = &wr_addrlist_addrs[i];
-    }
-    
-    ret = sd_ble_gap_whitelist_set(wr_addrlist_addr_ptrs, wr_addr_count);
-    APP_ERROR_CHECK(ret);
-    return NRF_SUCCESS;
-}
-
-ret_code_t wr_ble_addrlist_clear(void)
-{
-    ret_code_t ret;
-    memset(wr_addrlist_addrs, 0, sizeof(wr_addrlist_addrs) );
-    wr_addr_count = 0;
-
-    ret = sd_ble_gap_whitelist_set(NULL, 0);
-    APP_ERROR_CHECK(ret);
-
-    wr_addrlist_is_running = false;
-    return ret;
-}
-
-uint8_t wr_ble_addrlist_count(void)
-{
-    return wr_addr_count;
-}
-
-bool wr_ble_addrlist_is_running(void)
-{
-    return wr_addrlist_is_running;
-}
-
-// for debuging
-static void wr_ble_addrlist_logshow(void)
-{
-    NRF_LOG_INFO("[ADDRLIST]: ");
-    for (uint32_t i = 0; i < wr_addr_count; i++)
-    {
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[5]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[4]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[3]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[2]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[1]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[0]);
-    }
-}
-
-// END OF ADDRLIST LIB
 
 /**@brief Function to handle asserts in the SoftDevice.
  *
@@ -285,6 +207,7 @@ static void scan_start(void)
     err_code = nrf_ble_scan_start(&m_scan);
     APP_ERROR_CHECK(err_code);
 }
+
 
 /**@brief Function for handling BLE events.
  *
@@ -475,8 +398,6 @@ static void whitelist_disable(void)
     }
 }
 
-
-
 /**@brief Function for handling Scaning events.
  *
  * @param[in]   p_scan_evt   Scanning event.
@@ -558,21 +479,60 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
 
 static void ble_nus_wr4119_processing(void)
 {
+    ret_code_t err_code;
     //wr4119_connected = false;
     //wr4119_pressure_measured = false; todo
     ble_nus_wr4119_send_command(wr4119_cmd_pulse_start, WR4119_CMD_LENGHT);
     NRF_LOG_INFO("delay."); //add delay
-    nrf_delay_ms(60000);
-    ble_nus_wr4119_send_command(wr4119_cmd_pulse_stop, WR4119_CMD_LENGHT);
+    wr4119_measure_timeout += 10000;
+    err_code = app_timer_start(m_single_shot_timer_id, APP_TIMER_TICKS(wr4119_measure_timeout), NULL);
+    APP_ERROR_CHECK(err_code);
+    //nrf_delay_ms(60000);
+    //ble_nus_wr4119_send_command(wr4119_cmd_pulse_stop, WR4119_CMD_LENGHT);
     wr4119_pulse_measured = true;
     NRF_LOG_INFO("delay done.");
+    /*
     ble_nus_wr4119_send_command(wr4119_cmd_pressure_start, WR4119_CMD_LENGHT);
     NRF_LOG_INFO("delay."); //add delay
-    nrf_delay_ms(60000);
+    wr4119_measure_timeout += 1000;
+    err_code = app_timer_start(m_single_shot_timer_id, APP_TIMER_TICKS(timeout), NULL);
+    APP_ERROR_CHECK(err_code);
+    //nrf_delay_ms(60000);
     ble_nus_wr4119_send_command(wr4119_cmd_pressure_stop, WR4119_CMD_LENGHT);
     wr4119_pressure_measured = true;
     NRF_LOG_INFO("delay done.");
+    */
 }
+
+
+/**@brief Timeout handler for the single shot timer.
+ */
+static void single_shot_timer_handler(void * p_context)
+{
+    NRF_LOG_INFO("SINGLE SHOT TIMER.");
+    ble_nus_wr4119_send_command(wr4119_cmd_pulse_stop, WR4119_CMD_LENGHT);
+}
+
+
+/**@brief Create timers.
+ */
+static void create_timers()
+{
+    ret_code_t err_code;
+
+    // Create timers
+    /*
+    err_code = app_timer_create(&m_repeated_timer_id,
+                                APP_TIMER_MODE_REPEATED,
+                                repeated_timer_handler);
+    APP_ERROR_CHECK(err_code);
+    */
+    err_code = app_timer_create(&m_single_shot_timer_id,
+                                APP_TIMER_MODE_SINGLE_SHOT,
+                                single_shot_timer_handler);
+    APP_ERROR_CHECK(err_code);
+}
+
 
 /**@brief Callback handling Nordic UART Service (NUS) client events.
  *
@@ -688,7 +648,7 @@ static void scan_init(void)
 
     memset(&init_scan, 0, sizeof(init_scan));
 
-    init_scan.connect_if_match = false;
+    init_scan.connect_if_match = true;
     init_scan.conn_cfg_tag     = APP_BLE_CONN_CFG_TAG;
     init_scan.p_scan_param     = &m_scan_param;
 
@@ -806,6 +766,7 @@ int main(void)
     //lbs_c_init();
 
     //whitelist_load();
+    create_timers();
 
     ret_code_t ret;
     ret = wr_ble_addrlist_clear();

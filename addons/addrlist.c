@@ -91,7 +91,7 @@ bool wr_ble_addrlist_is_running(void)
 // for debuging
 void wr_ble_addrlist_logshow(void)
 {
-    NRF_LOG_INFO("[ADDRLIST]: ");
+    NRF_LOG_INFO("[ADDRLIST] logshow: ");
     for (uint32_t i = 0; i < wr_addr_count; i++)
     {
         NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[5]);

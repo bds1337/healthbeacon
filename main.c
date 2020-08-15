@@ -38,9 +38,7 @@
  *
  */
 /**
- * @brief BLE LED Button Service central and client application main file.
- *
- * This file contains the source code for a sample client application using the LED Button service.
+ * @brief BLE Beacon WR4119
  */
 
 #include <stdint.h>
@@ -53,7 +51,6 @@
 #include "app_timer.h"
 #include "boards.h"
 #include "bsp.h"
-//#include "bsp_btn_ble.h"
 #include "ble.h"
 #include "ble_hci.h"
 #include "ble_advertising.h"
@@ -63,60 +60,49 @@
 #include "nrf_ble_gatt.h"
 #include "nrf_ble_scan.h"
 
-
-//added
 #include "nrf_fstorage.h"
 #include "ble_nus_c.h"
 #include "nrf_delay.h" // буду использовать апп таймер всместо
 
+#include "addons/addrlist.h" // вишлист
 
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
 
-#include "addons/addrlist.h"
-
 #define APP_BLE_CONN_CFG_TAG        1                                   /**< Tag that identifies the BLE configuration of the SoftDevice. */
 #define APP_BLE_OBSERVER_PRIO       3                                   /**< BLE observer priority of the application. There is no need to modify this value. */
 #define APP_SOC_OBSERVER_PRIO       1                                   /**< SoC observer priority of the application. There is no need to modify this value. */
-
-#define CENTRAL_SCANNING_LED            BSP_BOARD_LED_0                     /**< Scanning LED will be on when the device is scanning. */
-#define CENTRAL_CONNECTED_LED           BSP_BOARD_LED_1                     /**< Connected LED will be on when the device is connected. */
-#define LEDBUTTON_LED                   BSP_BOARD_LED_2                     /**< LED to indicate a change of state of the the Button characteristic on the peer. */
 
 #define SCAN_INTERVAL                   0x00A0                              /**< Determines scan interval in units of 0.625 millisecond. */
 #define SCAN_WINDOW                     0x0050                              /**< Determines scan window in units of 0.625 millisecond. */
 #define SCAN_DURATION                   0x0000                              /**< Timout when scanning. 0x0000 disables timeout. */
 
-#define MIN_CONNECTION_INTERVAL         MSEC_TO_UNITS(7.5, UNIT_1_25_MS)    /**< Determines minimum connection interval in milliseconds. */
-#define MAX_CONNECTION_INTERVAL         MSEC_TO_UNITS(30, UNIT_1_25_MS)     /**< Determines maximum connection interval in milliseconds. */
-#define SLAVE_LATENCY                   0                                   /**< Determines slave latency in terms of connection events. */
-#define SUPERVISION_TIMEOUT             MSEC_TO_UNITS(4000, UNIT_10_MS)     /**< Determines supervision time-out in units of 10 milliseconds. */
+// Команды для WR4119
 
-#define LEDBUTTON_BUTTON_PIN            BSP_BUTTON_0                        /**< Button that will write to the LED characteristic of the peer */
-#define BUTTON_DETECTION_DELAY          APP_TIMER_TICKS(50)                 /**< Delay from a GPIOTE event until a button is reported as pushed (in number of timer ticks). */
-
-// WR4119 cmds
-#define TARGET_UUID                     0xFE9A 
+#define WR4119_MEASURE_TIME             APP_TIMER_TICKS(60000)              // 1 минута измерение пульса/давления
 #define WR4119_CMD_LENGHT               0x0007 //12
+
+#define WR4119_MEASURED_NONE            0x0000
+#define WR4119_MEASURED_PULSE           0x0001
+#define WR4119_MEASURED_PRESSURE        0x0002
+
 static uint8_t wr4119_cmd_pulse_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 0x01 };
 static uint8_t wr4119_cmd_pulse_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 0x00 };
-
-//AB0004FF312101
 static uint8_t wr4119_cmd_pressure_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x01 };
 static uint8_t wr4119_cmd_pressure_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x00 };
 
-static uint32_t wr4119_measure_timeout = 0; // для таймера измерения давления и пульса
-
 BLE_NUS_C_DEF(m_ble_nus_c); 
-//BLE_LBS_C_DEF(m_ble_lbs_c);                                     /**< Main structure used by the LBS client module. */
+//BLE_LBS_C_DEF(m_ble_lbs_c);                                   /**< Main structure used by the LBS client module. */
 NRF_BLE_GATT_DEF(m_gatt);                                       /**< GATT module instance. */
 BLE_DB_DISCOVERY_DEF(m_db_disc);                                /**< DB discovery module instance. */
 NRF_BLE_SCAN_DEF(m_scan);                                       /**< Scanning module instance. */
 
-APP_TIMER_DEF(m_single_shot_timer_id);
+APP_TIMER_DEF(m_single_shot_timer_id); // таймер (делей между командами измерения давления/пульса)
 
 static uint16_t m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - OPCODE_LENGTH - HANDLE_LENGTH;
+
+static uint16_t wr4119_measured = WR4119_MEASURED_NONE;
 
 static bool wr4119_connected;
 static bool wr4119_pulse_measured;
@@ -124,17 +110,6 @@ static bool wr4119_pressure_measured;
 
 static bool m_whitelist_disabled;          /**< True if the whitelist is temporarily disabled. */
 static bool m_memory_access_in_progress;
-
-static ble_gap_scan_params_t const m_scan_param_old =                 /**< Scan parameters requested for scanning and connection. */
-{
-    .active        = 0x00,
-    .interval      = NRF_BLE_SCAN_SCAN_INTERVAL,
-    .window        = NRF_BLE_SCAN_SCAN_WINDOW,
-    .filter_policy  = BLE_GAP_SCAN_FP_ACCEPT_ALL,
-    .timeout       = NRF_BLE_SCAN_SCAN_DURATION,
-    .scan_phys     = BLE_GAP_PHY_1MBPS,
-    .extended      = 0,
-};
 
 /**< Scan parameters requested for scanning and connection. */
 static ble_gap_scan_params_t m_scan_param =
@@ -145,23 +120,6 @@ static ble_gap_scan_params_t m_scan_param =
         .filter_policy = BLE_GAP_SCAN_FP_WHITELIST,
         .timeout       = 0, //SCAN_DURATION_WHITELIST
         .scan_phys     = BLE_GAP_PHY_1MBPS,
-};
-
-typedef enum
-{
-    BLE_NO_SCAN,                                                  /**< No advertising running. */
-    BLE_WHITELIST_SCAN,                                           /**< Advertising with whitelist. */
-    BLE_FAST_SCAN,                                                /**< Fast advertising running. */
-} ble_advertising_mode_t;
-
-static char const m_target_periph_name[] = "WR4119";     /**< Name of the device we try to connect to. This name is searched in the scan report data*/
-static bool is_connect_per_addr = true;            /**< If you want to connect to a peripheral with a given address, set this to true and put the correct address in the variable below. */
-
-//.addr      = {0xEF, 0xCC, 0x8F, 0xF8, 0x87, 0x50}, but need to reverse
-static ble_gap_addr_t const m_target_periph_addr =
-{
-    .addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC,
-    .addr      = {0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF} // наоборот!
 };
 
 
@@ -181,7 +139,7 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
     app_error_handler(0xDEADBEEF, line_num, p_file_name);
 }
 
-static void ble_nus_wr4119_processing(void);
+static void ble_nus_wr4119_start_measure(void);
 
 /**@brief Function for the LEDs initialization.
  *
@@ -446,7 +404,7 @@ static void ble_nus_chars_received_uart_print(uint8_t * p_data, uint16_t data_le
 {
     ret_code_t ret_val;
 
-    NRF_LOG_INFO("Receiving data.");
+    NRF_LOG_INFO("Receiving data:");
     NRF_LOG_RAW_HEXDUMP_INFO(p_data, data_len);
 }
 
@@ -456,12 +414,8 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
 {
     ret_code_t ret_val;
 
-    NRF_LOG_INFO("Sending data.");
+    NRF_LOG_INFO("Sending data:");
     NRF_LOG_RAW_HEXDUMP_INFO(p_data, data_len);
-    //Turn on PULSE
-    //uint8_t * myp_data = wr4119_cmd_pulse_start;
-    //uint16_t mydata_len = WR4119_CMD_LENGHT;
-    //NRF_LOG_RAW_HEXDUMP_INFO(myp_data, mydata_len);
 
     // Send data back to the peripheral.
     do
@@ -477,60 +431,47 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
 
 
 
-static void ble_nus_wr4119_processing(void)
+static void ble_nus_wr4119_start_measure(void)
 {
     ret_code_t err_code;
-    //wr4119_connected = false;
-    //wr4119_pressure_measured = false; todo
+
     ble_nus_wr4119_send_command(wr4119_cmd_pulse_start, WR4119_CMD_LENGHT);
-    NRF_LOG_INFO("delay."); //add delay
-    wr4119_measure_timeout += 10000;
-    err_code = app_timer_start(m_single_shot_timer_id, APP_TIMER_TICKS(wr4119_measure_timeout), NULL);
+    //err_code = app_timer_start(m_single_shot_timer_id, WR4119_MEASURE_TIME, NULL);
+    err_code = app_timer_start(m_single_shot_timer_id, APP_TIMER_TICKS(3000), NULL); //3 секунды для дебага
     APP_ERROR_CHECK(err_code);
     //nrf_delay_ms(60000);
-    //ble_nus_wr4119_send_command(wr4119_cmd_pulse_stop, WR4119_CMD_LENGHT);
-    wr4119_pulse_measured = true;
-    NRF_LOG_INFO("delay done.");
-    /*
-    ble_nus_wr4119_send_command(wr4119_cmd_pressure_start, WR4119_CMD_LENGHT);
-    NRF_LOG_INFO("delay."); //add delay
-    wr4119_measure_timeout += 1000;
-    err_code = app_timer_start(m_single_shot_timer_id, APP_TIMER_TICKS(timeout), NULL);
-    APP_ERROR_CHECK(err_code);
-    //nrf_delay_ms(60000);
-    ble_nus_wr4119_send_command(wr4119_cmd_pressure_stop, WR4119_CMD_LENGHT);
-    wr4119_pressure_measured = true;
-    NRF_LOG_INFO("delay done.");
-    */
+    wr4119_measured = WR4119_MEASURED_PULSE;
+
 }
 
 
-/**@brief Timeout handler for the single shot timer.
+/**@brief Timeout handler
  */
 static void single_shot_timer_handler(void * p_context)
 {
-    NRF_LOG_INFO("SINGLE SHOT TIMER.");
-    ble_nus_wr4119_send_command(wr4119_cmd_pulse_stop, WR4119_CMD_LENGHT);
-}
-
-
-/**@brief Create timers.
- */
-static void create_timers()
-{
     ret_code_t err_code;
+    NRF_LOG_INFO("SINGLE SHOT TIMER.");
+    switch(wr4119_measured)
+    {
+        case WR4119_MEASURED_PULSE:
+        {
+            ble_nus_wr4119_send_command(wr4119_cmd_pulse_stop, WR4119_CMD_LENGHT);
+            ble_nus_wr4119_send_command(wr4119_cmd_pressure_start, WR4119_CMD_LENGHT);
+            //err_code = app_timer_start(m_single_shot_timer_id, WR4119_MEASURE_TIME, NULL);
+            err_code = app_timer_start(m_single_shot_timer_id, APP_TIMER_TICKS(3000), NULL); //3 секунды для дебага
+            APP_ERROR_CHECK(err_code);
+            wr4119_measured = WR4119_MEASURED_PRESSURE;
+        } break;
+        
+        case WR4119_MEASURED_PRESSURE:
+        {
+            ble_nus_wr4119_send_command(wr4119_cmd_pressure_stop, WR4119_CMD_LENGHT);
+            wr4119_measured = WR4119_MEASURED_NONE;
+        } break;
 
-    // Create timers
-    /*
-    err_code = app_timer_create(&m_repeated_timer_id,
-                                APP_TIMER_MODE_REPEATED,
-                                repeated_timer_handler);
-    APP_ERROR_CHECK(err_code);
-    */
-    err_code = app_timer_create(&m_single_shot_timer_id,
-                                APP_TIMER_MODE_SINGLE_SHOT,
-                                single_shot_timer_handler);
-    APP_ERROR_CHECK(err_code);
+        default:
+          break;
+    }
 }
 
 
@@ -558,8 +499,7 @@ static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t con
             err_code = ble_nus_c_tx_notif_enable(p_ble_nus_c);
             APP_ERROR_CHECK(err_code);
             NRF_LOG_INFO("Connected to device with Nordic UART Service.");
-            // замерить давление и пульс
-            ble_nus_wr4119_processing();
+            ble_nus_wr4119_start_measure(); // замерить давление и пульс
          } break;
 
         case BLE_NUS_C_EVT_NUS_TX_EVT:
@@ -628,7 +568,14 @@ static void log_init(void)
  */
 static void timer_init(void)
 {
-    ret_code_t err_code = app_timer_init();
+    ret_code_t err_code; 
+
+    err_code = app_timer_init();
+    APP_ERROR_CHECK(err_code);
+
+    err_code = app_timer_create(&m_single_shot_timer_id,
+                                APP_TIMER_MODE_SINGLE_SHOT,
+                                single_shot_timer_handler);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -654,25 +601,7 @@ static void scan_init(void)
 
     err_code = nrf_ble_scan_init(&m_scan, &init_scan, scan_evt_handler);
     APP_ERROR_CHECK(err_code);
-
-    // установка фильтров
-    //err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_NAME_FILTER, m_target_periph_name);
-    //APP_ERROR_CHECK(err_code);
     
-    // NRF_BLE_SCAN_ADDR_FILTER NRF_BLE_SCAN_ALL_FILTER
-    err_code = nrf_ble_scan_filters_enable(&m_scan, NRF_BLE_SCAN_ALL_FILTER, false);
-    APP_ERROR_CHECK(err_code);
-    
-    //if (is_connect_per_addr)
-    if (0)
-    {
-        err_code = nrf_ble_scan_filter_set(&m_scan, SCAN_ADDR_FILTER, m_target_periph_addr.addr);
-        if (err_code != NRF_SUCCESS) 
-        {
-            NRF_LOG_INFO("error-%d",err_code); // 7 = NRF_ERROR_INVALID_PARAM
-        }
-        APP_ERROR_CHECK(err_code);
-    }
     m_whitelist_disabled = false;
 }
 
@@ -692,11 +621,9 @@ void gatt_evt_handler(nrf_ble_gatt_t * p_gatt, nrf_ble_gatt_evt_t const * p_evt)
  */
 static void gatt_init(void)
 {
-    //ret_code_t err_code = nrf_ble_gatt_init(&m_gatt, NULL);
     ret_code_t err_code = nrf_ble_gatt_init(&m_gatt, gatt_evt_handler);
     APP_ERROR_CHECK(err_code);
     
-    //dunno
     err_code = nrf_ble_gatt_att_mtu_central_set(&m_gatt, NRF_SDH_BLE_GATT_MAX_MTU_SIZE);
     APP_ERROR_CHECK(err_code);
 }
@@ -762,32 +689,25 @@ int main(void)
     gatt_init();
     nus_c_init();
     scan_init();
-    // led stuff are unused
-    //lbs_c_init();
-
-    //whitelist_load();
-    create_timers();
 
     ret_code_t ret;
     ret = wr_ble_addrlist_clear();
     APP_ERROR_CHECK(ret);
     
-    TEST_set_whitelist();
-    TEST_set_whitelist_wr41();
-    //TEST_set_whitelist();
+    TEST_set_whitelist();      // Адрес другой платы nrf52 DK 
+    TEST_set_whitelist_wr41(); // Добавляю браслет в список адресов
+
     
     ret = wr_ble_addrlist_enable();
     APP_ERROR_CHECK(ret);
-    //wr_ble_addrlist_logshow();
+
     wr_ble_addrlist_logshow();
     
     // Start execution.
-    NRF_LOG_INFO("Blinky CENTRAL example started.");
-       //test_set_whitelist();
+    NRF_LOG_INFO("[MAIN] Program started...");
+
     scan_start();
 
-    // Turn on the LED to signal scanning.
-    //bsp_board_led_on(CENTRAL_SCANNING_LED);
 
     // Enter main loop.
     for (;;)

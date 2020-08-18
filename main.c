@@ -92,10 +92,11 @@ static uint8_t wr4119_cmd_pulse_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 
 static uint8_t wr4119_cmd_pressure_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x01 };
 static uint8_t wr4119_cmd_pressure_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x00 };
 
-BLE_NUS_C_DEF(m_ble_nus_c); 
-//BLE_LBS_C_DEF(m_ble_lbs_c);                                   /**< Main structure used by the LBS client module. */
+//BLE_NUS_C_DEF(m_ble_nus_c); //old
+BLE_NUS_C_ARRAY_DEF(m_ble_nus_c, NRF_SDH_BLE_CENTRAL_LINK_COUNT);  
 NRF_BLE_GATT_DEF(m_gatt);                                       /**< GATT module instance. */
-BLE_DB_DISCOVERY_DEF(m_db_disc);                                /**< DB discovery module instance. */
+//BLE_DB_DISCOVERY_DEF(m_db_disc);                                /**< DB discovery module instance. */
+BLE_DB_DISCOVERY_ARRAY_DEF(m_db_disc, NRF_SDH_BLE_CENTRAL_LINK_COUNT);  /**< Database discovery module instances. */
 NRF_BLE_SCAN_DEF(m_scan);                                       /**< Scanning module instance. */
 
 APP_TIMER_DEF(m_single_shot_timer_id); // таймер (делей между командами измерения давления/пульса)
@@ -178,7 +179,6 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 
     // For readability.
     ble_gap_evt_t const * p_gap_evt = &p_ble_evt->evt.gap_evt;
-    //ble_gap_evt_adv_report_t const * p_gap_rssi = &p_gap_evt->adv_report;
 
     switch (p_ble_evt->header.evt_id)
     {
@@ -186,18 +186,32 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
         // discovery, update LEDs status and resume scanning if necessary. */
         case BLE_GAP_EVT_CONNECTED:
         {
-            NRF_LOG_INFO("Connected.");
+            NRF_LOG_INFO("Connection 0x%x established, starting DB discovery.",
+                         p_gap_evt->conn_handle);
 
-            err_code = ble_nus_c_handles_assign(&m_ble_nus_c, p_ble_evt->evt.gap_evt.conn_handle, NULL);
+            APP_ERROR_CHECK_BOOL(p_gap_evt->conn_handle < NRF_SDH_BLE_CENTRAL_LINK_COUNT);
+
+            //err_code = ble_nus_c_handles_assign(&m_ble_nus_c, p_ble_evt->evt.gap_evt.conn_handle, NULL);
+            err_code = ble_nus_c_handles_assign(&m_ble_nus_c[p_gap_evt->conn_handle],
+                                                p_gap_evt->conn_handle,
+                                                NULL);
+
             APP_ERROR_CHECK(err_code);
 
             //err_code = ble_lbs_c_handles_assign(&m_ble_lbs_c, p_gap_evt->conn_handle, NULL);
             //APP_ERROR_CHECK(err_code);
 
-            err_code = ble_db_discovery_start(&m_db_disc, p_gap_evt->conn_handle);
-            APP_ERROR_CHECK(err_code);
+            err_code = ble_db_discovery_start(&m_db_disc[p_gap_evt->conn_handle],
+                                              p_gap_evt->conn_handle);
+            if (err_code != NRF_ERROR_BUSY)
+            {
+                APP_ERROR_CHECK(err_code);
+            }
 
             wr4119_connected = true;
+
+            // Продолжаю сканировать
+            scan_start();
             
 
         } break;
@@ -206,7 +220,9 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
         // the LEDs status and start scanning again.
         case BLE_GAP_EVT_DISCONNECTED:
         {
-            NRF_LOG_INFO("Disconnected.");
+            NRF_LOG_INFO("LBS central link 0x%x disconnected (reason: 0x%x)",
+                         p_gap_evt->conn_handle,
+                         p_gap_evt->params.disconnected.reason);
             wr4119_connected = false;
             wr4119_pulse_measured = false;
             wr4119_pressure_measured = false;
@@ -416,17 +432,35 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
 
     NRF_LOG_INFO("Sending data:");
     NRF_LOG_RAW_HEXDUMP_INFO(p_data, data_len);
+    
 
     // Send data back to the peripheral.
-    do
+    for (uint32_t i = 0; i< NRF_SDH_BLE_CENTRAL_LINK_COUNT; i++)
     {
-        ret_val = ble_nus_c_string_send(&m_ble_nus_c, p_data, data_len);
-        if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
+        do
         {
-            NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
-            APP_ERROR_CHECK(ret_val);
-        }
-    } while (ret_val == NRF_ERROR_BUSY);
+        //uint16_t length = (uint16_t)index;
+        //ret_val = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
+        ret_val = ble_nus_c_string_send(&m_ble_nus_c[i], p_data, data_len);
+                        if ((ret_val != NRF_ERROR_INVALID_STATE) &&
+                            (ret_val != NRF_ERROR_RESOURCES) &&
+                            (ret_val != NRF_ERROR_NOT_FOUND))
+                        {
+                            APP_ERROR_CHECK(ret_val);
+                        }
+        } while (ret_val == NRF_ERROR_RESOURCES);
+        /*
+        do
+        {
+            ret_val = ble_nus_c_string_send(&m_ble_nus_c[i], p_data, data_len);
+            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
+            {
+                NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
+                APP_ERROR_CHECK(ret_val);
+            }
+        } while (ret_val == NRF_ERROR_BUSY);
+        */
+    }
 }
 
 
@@ -484,7 +518,7 @@ static void single_shot_timer_handler(void * p_context)
  */
 
 /**@snippet [Handling events from the ble_nus_c module] */
-static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t const * p_ble_nus_evt)
+static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t * p_ble_nus_evt)
 {
     ret_code_t err_code;
 
@@ -510,9 +544,12 @@ static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t con
             ble_nus_chars_received_uart_print(p_ble_nus_evt->p_data, p_ble_nus_evt->data_len);
         } break;
 
-        case BLE_NUS_C_EVT_DISCONNECTED:
-            NRF_LOG_INFO("Disconnected.");
-            scan_start();
+        //case BLE_NUS_C_EVT_DISCONNECTED:
+        //    NRF_LOG_INFO("Disconnected.");
+        //    scan_start();
+        //    break;
+
+       default:
             break;
     }
 }
@@ -525,9 +562,12 @@ static void nus_c_init(void)
     ble_nus_c_init_t init;
 
     init.evt_handler = ble_nus_c_evt_handler;
-
-    err_code = ble_nus_c_init(&m_ble_nus_c, &init);
-    APP_ERROR_CHECK(err_code);
+    
+    for (uint32_t i = 0; i < NRF_SDH_BLE_CENTRAL_LINK_COUNT; i++)
+    {
+        err_code = ble_nus_c_init(&m_ble_nus_c[i], &init);
+        APP_ERROR_CHECK(err_code);
+    }
 }
 
 
@@ -541,7 +581,7 @@ static void nus_c_init(void)
  */
 static void db_disc_handler(ble_db_discovery_evt_t * p_evt)
 {
-    ble_nus_c_on_db_disc_evt(&m_ble_nus_c, p_evt);
+    ble_nus_c_on_db_disc_evt(&m_ble_nus_c[p_evt->conn_handle], p_evt);
 }
 
 /**@brief Database discovery initialization.
@@ -624,8 +664,8 @@ static void gatt_init(void)
     ret_code_t err_code = nrf_ble_gatt_init(&m_gatt, gatt_evt_handler);
     APP_ERROR_CHECK(err_code);
     
-    err_code = nrf_ble_gatt_att_mtu_central_set(&m_gatt, NRF_SDH_BLE_GATT_MAX_MTU_SIZE);
-    APP_ERROR_CHECK(err_code);
+    //err_code = nrf_ble_gatt_att_mtu_central_set(&m_gatt, NRF_SDH_BLE_GATT_MAX_MTU_SIZE);
+    //APP_ERROR_CHECK(err_code);
 }
 
 
@@ -677,6 +717,25 @@ static void TEST_set_whitelist_wr41()
     NRF_LOG_INFO("addlist num: %u", whitelist_num);
     APP_ERROR_CHECK(ret);
 }
+
+static void TEST_set_whitelist_phone()
+{
+    ret_code_t ret;
+    ble_gap_addr_t whitelist_addrs;
+    uint8_t whitelist_num = 0;
+    whitelist_addrs.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
+    //{0x50, 0x87, 0xF8, 0x8F, 0xCC, 0xEF}
+    whitelist_addrs.addr[5] = 0x4e;
+    whitelist_addrs.addr[4] = 0xba;
+    whitelist_addrs.addr[3] = 0x7b;
+    whitelist_addrs.addr[2] = 0xc8;
+    whitelist_addrs.addr[1] = 0xc9;
+    whitelist_addrs.addr[0] = 0xaa;
+    ret = wr_ble_addrlist_add(&whitelist_addrs, &whitelist_num);
+    NRF_LOG_INFO("addlist num: %u", whitelist_num);
+    APP_ERROR_CHECK(ret);
+}
+
 int main(void)
 {
     // Initialize.
@@ -688,6 +747,7 @@ int main(void)
     ble_stack_init();
     gatt_init();
     nus_c_init();
+    //ble_conn_state_init();
     scan_init();
 
     ret_code_t ret;
@@ -695,6 +755,7 @@ int main(void)
     APP_ERROR_CHECK(ret);
     
     TEST_set_whitelist();      // Адрес другой платы nrf52 DK 
+    //TEST_set_whitelist_phone();
     TEST_set_whitelist_wr41(); // Добавляю браслет в список адресов
 
     

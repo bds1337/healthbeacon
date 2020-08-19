@@ -209,10 +209,11 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
             }
 
             wr4119_connected = true;
-
-            // Продолжаю сканировать
-            scan_start();
-            
+            if (ble_conn_state_central_conn_count() != NRF_SDH_BLE_CENTRAL_LINK_COUNT)
+            {
+                // Продолжаю сканировать
+                scan_start();
+            }
 
         } break;
 
@@ -248,6 +249,7 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 
         case BLE_GAP_EVT_CONN_PARAM_UPDATE_REQUEST:
         {
+            NRF_LOG_DEBUG("BLE_GAP_EVT_CONN_PARAM_UPDATE_REQUEST.");
             // Accept parameters requested by peer.
             err_code = sd_ble_gap_conn_param_update(p_gap_evt->conn_handle,
                                         &p_gap_evt->params.conn_param_update_request.conn_params);
@@ -433,33 +435,19 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
     NRF_LOG_INFO("Sending data:");
     NRF_LOG_RAW_HEXDUMP_INFO(p_data, data_len);
     
-
-    // Send data back to the peripheral.
     for (uint32_t i = 0; i< NRF_SDH_BLE_CENTRAL_LINK_COUNT; i++)
     {
         do
         {
-        //uint16_t length = (uint16_t)index;
-        //ret_val = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
-        ret_val = ble_nus_c_string_send(&m_ble_nus_c[i], p_data, data_len);
-                        if ((ret_val != NRF_ERROR_INVALID_STATE) &&
-                            (ret_val != NRF_ERROR_RESOURCES) &&
-                            (ret_val != NRF_ERROR_NOT_FOUND))
-                        {
-                            APP_ERROR_CHECK(ret_val);
-                        }
-        } while (ret_val == NRF_ERROR_RESOURCES);
-        /*
-        do
-        {
             ret_val = ble_nus_c_string_send(&m_ble_nus_c[i], p_data, data_len);
-            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY))
+            // NOTE: Игнорим (<warning> ble_nus_c: Connection handle invalid.)
+            // Оно возникает потому что не все 8 (по дефолту) браслетов подключено
+            if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY) && (ret_val != NRF_ERROR_INVALID_STATE))
             {
                 NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
                 APP_ERROR_CHECK(ret_val);
             }
         } while (ret_val == NRF_ERROR_BUSY);
-        */
     }
 }
 
@@ -526,21 +514,22 @@ static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t * p
     {
         case BLE_NUS_C_EVT_DISCOVERY_COMPLETE:
         {
-            NRF_LOG_INFO("Discovery complete.");
+            NRF_LOG_INFO("Discovery complete.on conn_handle 0x%x",
+                         p_ble_nus_evt->conn_handle);
+
             err_code = ble_nus_c_handles_assign(p_ble_nus_c, p_ble_nus_evt->conn_handle, &p_ble_nus_evt->handles);
             APP_ERROR_CHECK(err_code);
 
             err_code = ble_nus_c_tx_notif_enable(p_ble_nus_c);
             APP_ERROR_CHECK(err_code);
+
             NRF_LOG_INFO("Connected to device with Nordic UART Service.");
             ble_nus_wr4119_start_measure(); // замерить давление и пульс
          } break;
 
         case BLE_NUS_C_EVT_NUS_TX_EVT:
         {
-            //NRF_LOG_INFO("Got NUS TX:");
-            //NRF_LOG_RAW_HEXDUMP_INFO(p_ble_nus_evt->p_data, p_ble_nus_evt->data_len);
-            //NRF_LOG_HEXDUMP_DEBUG(p_ble_nus_evt->p_data, p_ble_nus_evt->data_len);
+            NRF_LOG_INFO("notification from conn handle 0x%04x", p_ble_nus_evt->conn_handle);
             ble_nus_chars_received_uart_print(p_ble_nus_evt->p_data, p_ble_nus_evt->data_len);
         } break;
 
@@ -562,7 +551,7 @@ static void nus_c_init(void)
     ble_nus_c_init_t init;
 
     init.evt_handler = ble_nus_c_evt_handler;
-    
+
     for (uint32_t i = 0; i < NRF_SDH_BLE_CENTRAL_LINK_COUNT; i++)
     {
         err_code = ble_nus_c_init(&m_ble_nus_c[i], &init);

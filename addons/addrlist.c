@@ -94,11 +94,12 @@ void wr_ble_addrlist_logshow(void)
     NRF_LOG_INFO("[ADDRLIST] logshow: ");
     for (uint32_t i = 0; i < wr_addr_count; i++)
     {
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[5]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[4]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[3]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[2]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[1]);
-        NRF_LOG_INFO("%x", wr_addrlist_addr_ptrs[i]->addr[0]);
+        NRF_LOG_INFO("%02x:%02x:%02x:%02x:%02x:%02x",
+            wr_addrlist_addr_ptrs[i]->addr[5],
+            wr_addrlist_addr_ptrs[i]->addr[4],
+            wr_addrlist_addr_ptrs[i]->addr[3],
+            wr_addrlist_addr_ptrs[i]->addr[2],
+            wr_addrlist_addr_ptrs[i]->addr[1],
+            wr_addrlist_addr_ptrs[i]->addr[0]);
     }
 }

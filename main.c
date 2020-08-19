@@ -78,6 +78,11 @@
 #define SCAN_WINDOW                     0x0050                              /**< Determines scan window in units of 0.625 millisecond. */
 #define SCAN_DURATION                   0x0000                              /**< Timout when scanning. 0x0000 disables timeout. */
 
+// Scheduler settings
+//#define SCHED_MAX_EVENT_DATA_SIZE   sizeof(nrf_drv_gpiote_pin_t)
+#define SCHED_MAX_EVENT_DATA_SIZE   1
+#define SCHED_QUEUE_SIZE            10
+
 // Команды для WR4119
 
 #define WR4119_MEASURE_TIME             APP_TIMER_TICKS(60000)              // 1 минута измерение пульса/давления
@@ -99,11 +104,15 @@ NRF_BLE_GATT_DEF(m_gatt);                                       /**< GATT module
 BLE_DB_DISCOVERY_ARRAY_DEF(m_db_disc, NRF_SDH_BLE_CENTRAL_LINK_COUNT);  /**< Database discovery module instances. */
 NRF_BLE_SCAN_DEF(m_scan);                                       /**< Scanning module instance. */
 
+//APP_SCHED_INIT(SCHED_MAX_EVENT_DATA_SIZE, SCHED_QUEUE_SIZE);
 APP_TIMER_DEF(m_single_shot_timer_id); // таймер (делей между командами измерения давления/пульса)
+APP_TIMER_DEF(m_single_shot_scanner_timer_id); // таймер между сканированием и проведением измерений
 
 static uint16_t m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - OPCODE_LENGTH - HANDLE_LENGTH;
 
 static uint16_t wr4119_measured = WR4119_MEASURED_NONE;
+
+static bool CONNECT_TO_DEVICES = false; 
 
 static bool wr4119_connected;
 static bool wr4119_pulse_measured;
@@ -141,6 +150,7 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 }
 
 static void ble_nus_wr4119_start_measure(void);
+static void scan_init_connectable(void);
 
 /**@brief Function for the LEDs initialization.
  *
@@ -489,6 +499,7 @@ static void single_shot_timer_handler(void * p_context)
         {
             ble_nus_wr4119_send_command(wr4119_cmd_pressure_stop, WR4119_CMD_LENGHT);
             wr4119_measured = WR4119_MEASURED_NONE;
+            // Данные получены! Возвращаюсь в режим сканирования
         } break;
 
         default:
@@ -496,6 +507,24 @@ static void single_shot_timer_handler(void * p_context)
     }
 }
 
+/**@brief Timeout handler for the repeated timer.
+ */
+static void single_shot_scanner_timer_handler(void * p_context)
+{
+    ret_code_t err_code;
+    NRF_LOG_INFO("U GOT THAT");
+    // Начать измерения
+    if (CONNECT_TO_DEVICES == false)
+    {
+        NRF_LOG_INFO("CONNECT_TO_DEVICES = TRUE");
+        CONNECT_TO_DEVICES = true;
+        //err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gattc_evt.conn_handle,
+        //                                     BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+        nrf_ble_scan_stop();
+        scan_init_connectable();
+        scan_start();
+    }
+}
 
 /**@brief Callback handling Nordic UART Service (NUS) client events.
  *
@@ -606,6 +635,11 @@ static void timer_init(void)
                                 APP_TIMER_MODE_SINGLE_SHOT,
                                 single_shot_timer_handler);
     APP_ERROR_CHECK(err_code);
+    
+    err_code = app_timer_create(&m_single_shot_scanner_timer_id,
+                                APP_TIMER_MODE_SINGLE_SHOT,
+                                single_shot_scanner_timer_handler);
+    APP_ERROR_CHECK(err_code);
 }
 
 /**@brief Function for initializing the Power manager. */
@@ -618,6 +652,23 @@ static void power_management_init(void)
 
 
 static void scan_init(void)
+{
+    ret_code_t          err_code;
+    nrf_ble_scan_init_t init_scan;
+
+    memset(&init_scan, 0, sizeof(init_scan));
+
+    init_scan.connect_if_match = false;
+    init_scan.conn_cfg_tag     = APP_BLE_CONN_CFG_TAG;
+    init_scan.p_scan_param     = &m_scan_param;
+
+    err_code = nrf_ble_scan_init(&m_scan, &init_scan, scan_evt_handler);
+    APP_ERROR_CHECK(err_code);
+    
+    m_whitelist_disabled = false;
+}
+
+static void scan_init_connectable(void)
 {
     ret_code_t          err_code;
     nrf_ble_scan_init_t init_scan;
@@ -755,6 +806,10 @@ int main(void)
     
     // Start execution.
     NRF_LOG_INFO("[MAIN] Program started...");
+    
+
+    ret = app_timer_start(m_single_shot_scanner_timer_id, APP_TIMER_TICKS(120000), NULL); //2 минуты 2 секунды на сканирование и получение данных
+    APP_ERROR_CHECK(ret);
 
     scan_start();
 

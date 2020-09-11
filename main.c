@@ -39,7 +39,16 @@
  */
 /**
  * @brief BLE Beacon WR4119
+ * Сканирование устройств из списка адресов устройств (addrlist), 
+ * Подключение к устройсвам из списка, отправка команды начала измерения
+ * Нескольким устройствам (multilink Nordic UART Service до 8 устройств)
+ * Получение данных от устройств. 
+ *
  */
+
+/*
+* 
+*/
 
 #include <stdint.h>
 #include <stdio.h>
@@ -808,7 +817,9 @@ int main(void)
     NRF_LOG_INFO("[MAIN] Program started...");
     
 
-    ret = app_timer_start(m_single_shot_scanner_timer_id, APP_TIMER_TICKS(120000), NULL); //2 минуты 2 секунды на сканирование и получение данных
+    //ret = app_timer_start(m_single_shot_scanner_timer_id, APP_TIMER_TICKS(120000), NULL); //2 минуты 2 секунды на сканирование и получение данных
+    // Таймер перед подключением к браслету (сканирование устройств из списка)
+    ret = app_timer_start(m_single_shot_scanner_timer_id, APP_TIMER_TICKS(10000), NULL); 
     APP_ERROR_CHECK(ret);
 
     scan_start();

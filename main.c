@@ -71,7 +71,7 @@
 
 #include "nrf_fstorage.h"
 #include "ble_nus_c.h"
-#include "nrf_delay.h" // буду использовать апп таймер всместо
+#include "nrf_delay.h" // используются таймеры вместо делея 
 
 #include "addons/addrlist.h" // вишлист
 
@@ -101,19 +101,18 @@
 #define WR4119_MEASURED_PULSE           0x0001
 #define WR4119_MEASURED_PRESSURE        0x0002
 
-static uint8_t wr4119_cmd_pulse_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 0x01 };
+
+// Команды замера пульса и давления
+static uint8_t wr4119_cmd_pulse_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 0x01 }; 
 static uint8_t wr4119_cmd_pulse_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x09, 0x00 };
 static uint8_t wr4119_cmd_pressure_start[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x01 };
 static uint8_t wr4119_cmd_pressure_stop[7] = { 0xAB, 0x00, 0x04, 0xFF, 0x31, 0x21, 0x00 };
 
-//BLE_NUS_C_DEF(m_ble_nus_c); //old
 BLE_NUS_C_ARRAY_DEF(m_ble_nus_c, NRF_SDH_BLE_CENTRAL_LINK_COUNT);  
 NRF_BLE_GATT_DEF(m_gatt);                                       /**< GATT module instance. */
-//BLE_DB_DISCOVERY_DEF(m_db_disc);                                /**< DB discovery module instance. */
 BLE_DB_DISCOVERY_ARRAY_DEF(m_db_disc, NRF_SDH_BLE_CENTRAL_LINK_COUNT);  /**< Database discovery module instances. */
 NRF_BLE_SCAN_DEF(m_scan);                                       /**< Scanning module instance. */
 
-//APP_SCHED_INIT(SCHED_MAX_EVENT_DATA_SIZE, SCHED_QUEUE_SIZE);
 APP_TIMER_DEF(m_single_shot_timer_id); // таймер (делей между командами измерения давления/пульса)
 APP_TIMER_DEF(m_single_shot_scanner_timer_id); // таймер между сканированием и проведением измерений
 
@@ -445,7 +444,10 @@ static void ble_nus_chars_received_uart_print(uint8_t * p_data, uint16_t data_le
     NRF_LOG_RAW_HEXDUMP_INFO(p_data, data_len);
 }
 
-/**@brief Send shit on NUS
+/**@brief Команда отправки сообщения через сервич Nordic UART (NUS)
+ *
+ * @param[in]   p_data	    Данные для отправки.
+ * @param[in]   data_len    Длина данных.
  */
 static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
 {
@@ -460,7 +462,7 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
         {
             ret_val = ble_nus_c_string_send(&m_ble_nus_c[i], p_data, data_len);
             // NOTE: Игнорим (<warning> ble_nus_c: Connection handle invalid.)
-            // Оно возникает потому что не все 8 (по дефолту) браслетов подключено
+            // Оно возникает потому что не все 8 браслетов подключено
             if ((ret_val != NRF_SUCCESS) && (ret_val != NRF_ERROR_BUSY) && (ret_val != NRF_ERROR_INVALID_STATE))
             {
                 NRF_LOG_ERROR("Failed sending NUS message. Error 0x%x. ", ret_val);
@@ -471,7 +473,8 @@ static void ble_nus_wr4119_send_command(uint8_t * p_data, uint16_t data_len)
 }
 
 
-
+/**@brief Начать измерять давление и пульс
+ */
 static void ble_nus_wr4119_start_measure(void)
 {
     ret_code_t err_code;
@@ -508,7 +511,7 @@ static void single_shot_timer_handler(void * p_context)
         {
             ble_nus_wr4119_send_command(wr4119_cmd_pressure_stop, WR4119_CMD_LENGHT);
             wr4119_measured = WR4119_MEASURED_NONE;
-            // Данные получены! Возвращаюсь в режим сканирования
+            // Данные получены! TODO(теперь нужно вернуться в режим сканирования beacon) 
         } break;
 
         default:
@@ -521,7 +524,6 @@ static void single_shot_timer_handler(void * p_context)
 static void single_shot_scanner_timer_handler(void * p_context)
 {
     ret_code_t err_code;
-    NRF_LOG_INFO("U GOT THAT");
     // Начать измерения
     if (CONNECT_TO_DEVICES == false)
     {
@@ -562,7 +564,8 @@ static void ble_nus_c_evt_handler(ble_nus_c_t * p_ble_nus_c, ble_nus_c_evt_t * p
             APP_ERROR_CHECK(err_code);
 
             NRF_LOG_INFO("Connected to device with Nordic UART Service.");
-            ble_nus_wr4119_start_measure(); // замерить давление и пульс
+            
+	    ble_nus_wr4119_start_measure(); // замерить давление и пульс
          } break;
 
         case BLE_NUS_C_EVT_NUS_TX_EVT:
@@ -660,6 +663,7 @@ static void power_management_init(void)
 }
 
 
+/**@brief Инициализация сканирования устройств. */
 static void scan_init(void)
 {
     ret_code_t          err_code;
@@ -677,6 +681,8 @@ static void scan_init(void)
     m_whitelist_disabled = false;
 }
 
+/**@brief Инициализация сканирование устройств,
+ * с подключением к устройствам. */
 static void scan_init_connectable(void)
 {
     ret_code_t          err_code;
@@ -799,23 +805,23 @@ int main(void)
     //ble_conn_state_init();
     scan_init();
 
+    // включаем addrlist
     ret_code_t ret;
     ret = wr_ble_addrlist_clear();
     APP_ERROR_CHECK(ret);
-    
+
+    // Заносим адреса устройств (браслетов) в список подключаемых устройств (addrlist/wishlist) 
     TEST_set_whitelist();      // Адрес другой платы nrf52 DK 
     //TEST_set_whitelist_phone();
     TEST_set_whitelist_wr41(); // Добавляю браслет в список адресов
-
     
     ret = wr_ble_addrlist_enable();
     APP_ERROR_CHECK(ret);
 
-    wr_ble_addrlist_logshow();
+    wr_ble_addrlist_logshow(); //список адресов в addrlist
     
     // Start execution.
     NRF_LOG_INFO("[MAIN] Program started...");
-    
 
     //ret = app_timer_start(m_single_shot_scanner_timer_id, APP_TIMER_TICKS(120000), NULL); //2 минуты 2 секунды на сканирование и получение данных
     // Таймер перед подключением к браслету (сканирование устройств из списка)
